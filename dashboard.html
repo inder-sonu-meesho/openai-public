@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SDLC Pipeline — OpenAI Agents SDK</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'SF Mono',Monaco,Consolas,monospace;background:#f0f4f8;color:#1e293b;font-size:13px}
+.header{background:#1a1a2e;color:white;padding:12px 20px;display:flex;justify-content:space-between;align-items:center}
+.header h1{font-size:16px;font-weight:600}
+.submit{display:flex;gap:8px;padding:12px 20px;background:#e2e8f0;border-bottom:1px solid #cbd5e1}
+.submit input{flex:1;padding:8px 12px;border:1px solid #94a3b8;border-radius:6px;font-size:13px;font-family:inherit}
+.submit button{padding:8px 16px;background:#2563eb;color:white;border:none;border-radius:6px;cursor:pointer;font-weight:600;font-size:12px}
+.submit button:hover{background:#1d4ed8}
+.btn-secondary{background:#1e40af!important}
+.btn-secondary:hover{background:#1e3a5f!important}
+.btn-danger{background:#dc2626!important;font-size:11px!important;padding:4px 10px!important}
+.main{display:flex;height:calc(100vh - 95px)}
+.sidebar{width:320px;overflow-y:auto;border-right:1px solid #cbd5e1;background:white}
+.task-card{padding:12px 16px;border-bottom:1px solid #e2e8f0;cursor:pointer;transition:background 0.1s}
+.task-card:hover{background:#f8fafc}
+.task-card.active{background:#dbeafe;border-left:3px solid #2563eb}
+.task-card .goal{font-weight:600;font-size:12px;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.task-card .meta{font-size:11px;color:#64748b;display:flex;gap:8px;align-items:center}
+.status{display:inline-block;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.5px}
+.status.pending{background:#fef3c7;color:#92400e}
+.status.running{background:#dbeafe;color:#1d4ed8}
+.status.done{background:#d1fae5;color:#065f46}
+.status.failed{background:#fee2e2;color:#991b1b}
+.status.cancelled{background:#e2e8f0;color:#475569}
+.detail{flex:1;overflow-y:auto;padding:16px 20px}
+.stats-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px;margin-bottom:16px}
+.stat-card{background:white;border:1px solid #e2e8f0;border-radius:6px;padding:10px}
+.stat-card .agent{font-weight:700;font-size:11px;text-transform:uppercase;margin-bottom:4px}
+.stat-card .nums{font-size:11px;color:#64748b}
+.events-list{background:white;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden}
+.ev{padding:8px 12px;border-bottom:1px solid #f1f5f9;font-size:12px}
+.ev:last-child{border-bottom:none}
+.ev .author{font-weight:700;margin-right:6px;font-size:11px}
+.ev .tools{color:#059669;font-size:11px}
+.ev .err{color:#dc2626;font-size:11px}
+.ev .txt{color:#475569;margin-top:3px;white-space:pre-wrap;max-height:120px;overflow-y:auto;font-size:11px;line-height:1.5}
+.empty{text-align:center;padding:40px;color:#94a3b8}
+.stage-bar{display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap}
+.stage-pill{padding:4px 12px;border-radius:12px;font-size:11px;font-weight:600;background:#e2e8f0;color:#64748b}
+.stage-pill.active{background:#2563eb;color:white;animation:pulse 1.5s infinite}
+.stage-pill.done{background:#d1fae5;color:#065f46}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.7}}
+.section{margin-bottom:16px}
+.section-title{font-size:13px;font-weight:700;margin:16px 0 8px;color:#334155;display:flex;align-items:center;gap:8px}
+.summary-box{background:white;border:1px solid #e2e8f0;border-radius:6px;padding:12px}
+.summary-box .txt{white-space:pre-wrap;font-size:12px;color:#475569;max-height:200px;overflow-y:auto;line-height:1.6}
+.tabs{display:flex;gap:0;margin-bottom:0;border-bottom:2px solid #e2e8f0}
+.tab{padding:8px 16px;cursor:pointer;font-size:12px;font-weight:600;color:#64748b;border-bottom:2px solid transparent;margin-bottom:-2px}
+.tab.active{color:#2563eb;border-bottom-color:#2563eb}
+.tab:hover{color:#1e293b}
+.tab-content{display:none}
+.tab-content.open{display:block}
+.flow-item{display:flex;align-items:flex-start;gap:8px;padding:6px 12px;border-bottom:1px solid #f1f5f9;font-size:12px}
+.flow-dot{width:10px;height:10px;border-radius:50%;margin-top:3px;flex-shrink:0}
+.flow-line{flex:1}
+.agent-header{font-weight:700;font-size:12px;padding:6px 12px;border-top:1px solid #e2e8f0;margin-top:4px}
+</style>
+</head>
+<body>
+<div class="header">
+    <h1>SDLC Pipeline — OpenAI Agents SDK</h1>
+    <span id="clock" style="font-size:12px;color:#94a3b8"></span>
+</div>
+<div class="submit">
+    <input id="inp" placeholder="Enter engineering goal..." onkeydown="if(event.key==='Enter')doSubmit()">
+    <button onclick="doSubmit()">Start Pipeline</button>
+    <button class="btn-secondary" onclick="refresh()">Refresh</button>
+</div>
+<div class="main">
+    <div class="sidebar" id="sidebar"><div class="empty">No tasks yet.<br>Submit a goal to start.</div></div>
+    <div class="detail" id="detail"><div class="empty">Select a task from the sidebar</div></div>
+</div>
+<script>
+var BASE = (function(){
+    var p = window.location.pathname;
+    // strip trailing slash
+    if (p.endsWith('/')) p = p.slice(0, -1);
+    // If path doesn't end with a known prefix, try to find it
+    if (p.indexOf('/oai-pipeline') === -1) p = '/oai-pipeline';
+    return p;
+})();
+
+var tasks = [], cur = null, activeTab = 'flow';
+
+function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function timeSince(ts) {
+    var s = Math.floor(Date.now() / 1000 - ts);
+    if (s < 60) return s + 's ago';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+}
+
+function durFmt(s) {
+    if (s < 60) return s + 's';
+    return Math.floor(s / 60) + 'm ' + (s % 60) + 's';
+}
+
+function agentColor(a) {
+    var colors = {
+        orchestrator: '#6366f1',
+        architect: '#059669',
+        developer: '#d97706',
+        tester: '#0891b2',
+        reviewer: '#dc2626'
+    };
+    return colors[a] || '#64748b';
+}
+
+function agentFromToolCall(name) {
+    if (!name) return null;
+    var agents = ['architect', 'developer', 'tester', 'reviewer'];
+    for (var i = 0; i < agents.length; i++) {
+        if (name.toLowerCase().indexOf(agents[i]) >= 0) return agents[i];
+    }
+    return null;
+}
+
+async function doSubmit() {
+    var inp = document.getElementById('inp');
+    var g = inp.value.trim();
+    if (!g) return;
+    inp.disabled = true;
+    try {
+        var r = await fetch(BASE + '/api/submit', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({goal: g})
+        });
+        if (r.ok) {
+            var d = await r.json();
+            cur = d.task_id;
+            inp.value = '';
+            refresh();
+        } else {
+            var d = await r.json();
+            alert(d.detail || 'Failed');
+        }
+    } catch (e) { alert(e); }
+    inp.disabled = false;
+    inp.focus();
+}
+
+async function refresh() {
+    try {
+        var r = await fetch(BASE + '/api/tasks');
+        if (!r.ok) { console.error('tasks API error', r.status); return; }
+        tasks = await r.json();
+        renderSidebar();
+        if (cur) renderDetail();
+    } catch (e) { console.error('refresh:', e); }
+}
+
+function renderSidebar() {
+    var sb = document.getElementById('sidebar');
+    if (!tasks.length) {
+        sb.innerHTML = '<div class="empty">No tasks yet.<br>Submit a goal to start.</div>';
+        return;
+    }
+    var html = '';
+    for (var i = 0; i < tasks.length; i++) {
+        var t = tasks[i];
+        var cls = t.task_id === cur ? 'task-card active' : 'task-card';
+        html += '<div class="' + cls + '" onclick="selectTask(\'' + t.task_id + '\')">';
+        html += '<div class="goal">' + esc(t.goal) + '</div>';
+        html += '<div class="meta">';
+        html += '<span class="status ' + t.status + '">' + t.status + '</span>';
+        if (t.stage) html += '<span>' + esc(t.stage) + '</span>';
+        html += '<span>' + t.event_count + ' ev</span>';
+        html += '<span>' + timeSince(t.created_at) + '</span>';
+        html += '</div></div>';
+    }
+    sb.innerHTML = html;
+}
+
+function selectTask(id) {
+    cur = id;
+    activeTab = 'flow';
+    renderSidebar();
+    renderDetail();
+}
+
+async function renderDetail() {
+    if (!cur) {
+        document.getElementById('detail').innerHTML = '<div class="empty">Select a task</div>';
+        return;
+    }
+    var det = document.getElementById('detail');
+    try {
+        var responses = await Promise.all([
+            fetch(BASE + '/api/task/' + cur).then(function(r) { return r.json(); }),
+            fetch(BASE + '/api/task/' + cur + '/stats').then(function(r) { return r.json(); }),
+            fetch(BASE + '/api/task/' + cur + '/events').then(function(r) { return r.json(); })
+        ]);
+        var task = responses[0];
+        var stats = (responses[1] && responses[1].stats) ? responses[1].stats : {};
+        var evData = responses[2];
+        var events = (evData && evData.events) ? evData.events : [];
+
+        var stages = ['architect', 'developer', 'tester', 'reviewer'];
+        var hitStages = {};
+        for (var i = 0; i < events.length; i++) {
+            var ev = events[i];
+            var tc = ev.tool_calls || [];
+            for (var j = 0; j < tc.length; j++) {
+                var agent = agentFromToolCall(tc[j]);
+                if (agent) hitStages[agent] = true;
+            }
+        }
+
+        var durS = task.completed_at
+            ? Math.round(task.completed_at - task.created_at)
+            : Math.round(Date.now() / 1000 - task.created_at);
+
+        var html = '';
+
+        // Header
+        html += '<div style="margin-bottom:12px">';
+        html += '<h2 style="font-size:14px;margin-bottom:6px">' + esc(task.goal) + '</h2>';
+        html += '<span class="status ' + task.status + '">' + task.status + '</span>';
+        html += '<span style="margin-left:8px;color:#64748b;font-size:11px">' + events.length + ' events &middot; ' + durS + 's</span>';
+        if (task.status === 'running') {
+            html += ' <button class="btn-danger" onclick="cancelTask(\'' + task.task_id + '\')">Cancel</button>';
+        }
+        html += '</div>';
+
+        // Stage bar
+        html += '<div class="stage-bar">';
+        for (var i = 0; i < stages.length; i++) {
+            var s = stages[i];
+            var cls = 'stage-pill';
+            if (s === task.stage && task.status === 'running') cls += ' active';
+            else if (hitStages[s]) cls += ' done';
+            html += '<span class="' + cls + '">' + s + '</span>';
+        }
+        html += '</div>';
+
+        // Error
+        if (task.error) {
+            html += '<div style="background:#fee2e2;border:1px solid #fca5a5;border-radius:6px;padding:10px;margin-bottom:16px;color:#991b1b;font-size:12px">';
+            html += '<b>Error:</b> ' + esc(task.error) + '</div>';
+        }
+
+        // Stats cards
+        var statKeys = Object.keys(stats);
+        if (statKeys.length) {
+            html += '<div class="stats-grid">';
+            for (var i = 0; i < statKeys.length; i++) {
+                var a = statKeys[i], st = stats[a], c = agentColor(a);
+                html += '<div class="stat-card"><div class="agent" style="color:' + c + '">' + esc(a) + '</div>';
+                html += '<div class="nums">' + st.events + ' ev &middot; ' + st.tool_calls + ' tools';
+                if (st.tool_errors) html += ' &middot; <span style="color:#dc2626">' + st.tool_errors + ' err</span>';
+                html += '</div></div>';
+            }
+            html += '</div>';
+        }
+
+        // Summary
+        if (task.summary) {
+            html += '<div class="section"><div class="section-title">Summary</div>';
+            html += '<div class="summary-box"><div class="txt">' + esc(task.summary) + '</div></div></div>';
+        }
+
+        // Tabs
+        html += '<div class="tabs">';
+        html += '<div class="tab ' + (activeTab === 'flow' ? 'active' : '') + '" onclick="switchTab(\'flow\')">Flow</div>';
+        html += '<div class="tab ' + (activeTab === 'events' ? 'active' : '') + '" onclick="switchTab(\'events\')">Events (' + events.length + ')</div>';
+        html += '</div>';
+
+        // Flow tab
+        html += '<div class="tab-content ' + (activeTab === 'flow' ? 'open' : '') + '">';
+        html += renderFlow(events, task);
+        html += '</div>';
+
+        // Events tab
+        html += '<div class="tab-content ' + (activeTab === 'events' ? 'open' : '') + '">';
+        html += renderEvents(events);
+        html += '</div>';
+
+        det.innerHTML = html;
+        if (task.status === 'running') det.scrollTop = det.scrollHeight;
+    } catch (e) { console.error('renderDetail:', e); }
+}
+
+function renderFlow(events, task) {
+    if (!events.length) return '<div class="empty">No events yet</div>';
+    var html = '<div style="padding:12px">';
+    var lastAuthor = '';
+    for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var c = agentColor(ev.author);
+        // Show agent change as a header
+        if (ev.author !== lastAuthor) {
+            if (lastAuthor) html += '<div style="height:8px"></div>';
+            html += '<div style="font-weight:700;font-size:12px;color:' + c + ';padding:4px 0;border-top:1px solid #e2e8f0;margin-top:4px">' + esc(ev.author) + '</div>';
+            lastAuthor = ev.author;
+        }
+        html += '<div class="flow-item">';
+        html += '<div class="flow-dot" style="background:' + c + '"></div>';
+        html += '<div class="flow-line">';
+        if (ev.tool_calls && ev.tool_calls.length) html += '<span class="tools">&rarr; ' + ev.tool_calls.map(esc).join(', ') + '</span> ';
+        if (ev.tool_results && ev.tool_results.length) html += '<span class="tools">&larr; ' + ev.tool_results.map(esc).join(', ') + '</span> ';
+        if (ev.is_error) html += '<span class="err"> &#9888; error</span>';
+        if (ev.text) {
+            var t = esc(ev.text).substring(0, 200);
+            html += '<div style="color:#475569;font-size:11px;margin-top:2px">' + t + (ev.text.length > 200 ? '...' : '') + '</div>';
+        }
+        html += '</div></div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function renderEvents(events) {
+    if (!events.length) return '<div class="empty">No events recorded</div>';
+    var html = '<div class="events-list">';
+    for (var i = 0; i < events.length; i++) {
+        var ev = events[i];
+        var tc = ev.tool_calls || [];
+        var tr = ev.tool_results || [];
+        var c = agentColor(ev.author);
+
+        html += '<div class="ev">';
+        html += '<span class="author" style="color:' + c + '">[' + esc(ev.author) + ']</span> ';
+        if (tc.length) html += '<span class="tools">&rarr; ' + tc.map(esc).join(', ') + '</span> ';
+        if (tr.length) html += '<span class="tools">&larr; ' + tr.map(esc).join(', ') + '</span> ';
+        if (ev.is_error) html += '<span class="err"> &#9888;</span>';
+        if (ev.text) html += '<div class="txt">' + esc(ev.text) + '</div>';
+        html += '</div>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function switchTab(tab) { activeTab = tab; renderDetail(); }
+
+async function cancelTask(id) {
+    if (!confirm('Cancel this task?')) return;
+    await fetch(BASE + '/api/task/' + id, {method: 'DELETE'});
+    refresh();
+}
+
+// Init
+refresh();
+setInterval(function() {
+    document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+}, 1000);
+</script>
+</body>
+</html>
