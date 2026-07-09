@@ -274,6 +274,7 @@ async function renderDetail() {
         html += '<div class="tabs">';
         html += '<div class="tab ' + (activeTab === 'flow' ? 'active' : '') + '" onclick="switchTab(\'flow\')">Flow</div>';
         html += '<div class="tab ' + (activeTab === 'events' ? 'active' : '') + '" onclick="switchTab(\'events\')">Events (' + events.length + ')</div>';
+        html += '<div class="tab ' + (activeTab === 'traces' ? 'active' : '') + '" onclick="switchTab(\'traces\')">Traces</div>';
         html += '</div>';
 
         // Flow tab
@@ -284,6 +285,11 @@ async function renderDetail() {
         // Events tab
         html += '<div class="tab-content ' + (activeTab === 'events' ? 'open' : '') + '">';
         html += renderEvents(events);
+        html += '</div>';
+
+        // Traces tab
+        html += '<div class="tab-content ' + (activeTab === 'traces' ? 'open' : '') + '">';
+        html += '<div id="traces-container"><div class="ev" style="color:#94a3b8;text-align:center;cursor:pointer" onclick="loadTraces(\'' + task.task_id + '\')">Click to load traces</div></div>';
         html += '</div>';
 
         det.innerHTML = html;
@@ -342,6 +348,124 @@ function renderEvents(events) {
 }
 
 function switchTab(tab) { activeTab = tab; renderDetail(); }
+
+function durMs(start, end) {
+    if (!start || !end) return '';
+    var ms = new Date(end) - new Date(start);
+    if (ms < 1000) return ms + 'ms';
+    return (ms / 1000).toFixed(1) + 's';
+}
+
+async function loadTraces(taskId) {
+    var container = document.getElementById('traces-container');
+    container.innerHTML = '<div class="ev" style="color:#94a3b8">Loading traces...</div>';
+    try {
+        var r = await fetch(BASE + '/api/task/' + taskId + '/traces');
+        var data = await r.json();
+        var spans = data.spans || [];
+        if (!spans.length) { container.innerHTML = '<div class="ev" style="color:#94a3b8">No traces captured</div>'; return; }
+
+        // Categorize spans
+        var agents = [], generations = [], tools = [], turns = [], tasks = [];
+        var totalIn = 0, totalOut = 0, pipelineStart = null, pipelineEnd = null;
+
+        for (var i = 0; i < spans.length; i++) {
+            var s = spans[i];
+            if (!pipelineStart || s.started < pipelineStart) pipelineStart = s.started;
+            if (!pipelineEnd || s.ended > pipelineEnd) pipelineEnd = s.ended;
+
+            if (s.type === 'AgentSpanData') agents.push(s);
+            else if (s.type === 'GenerationSpanData') {
+                generations.push(s);
+                totalIn += s.input_tokens || 0;
+                totalOut += s.output_tokens || 0;
+            }
+            else if (s.type === 'FunctionSpanData') tools.push(s);
+            else if (s.type === 'TurnSpanData') turns.push(s);
+            else if (s.type === 'TaskSpanData') tasks.push(s);
+        }
+
+        var totalDur = durMs(pipelineStart, pipelineEnd);
+        var html = '';
+
+        // Summary bar
+        html += '<div class="ev" style="background:#f8fafc;display:flex;gap:16px;flex-wrap:wrap">';
+        html += '<span><b>Duration:</b> ' + totalDur + '</span>';
+        html += '<span><b>LLM Calls:</b> ' + generations.length + '</span>';
+        html += '<span><b>Tool Calls:</b> ' + tools.length + '</span>';
+        html += '<span><b>Turns:</b> ' + turns.length + '</span>';
+        if (totalIn || totalOut) html += '<span><b>Tokens:</b> ' + (totalIn + totalOut) + ' (' + totalIn + ' in / ' + totalOut + ' out)</span>';
+        html += '</div>';
+
+        // Agent timeline
+        html += '<div class="ev" style="background:#dbeafe;font-weight:700;font-size:12px">Agent Timeline</div>';
+        var totalMs = pipelineEnd && pipelineStart ? (new Date(pipelineEnd) - new Date(pipelineStart)) : 1;
+        for (var i = 0; i < agents.length; i++) {
+            var a = agents[i];
+            var c = agentColor(a.name);
+            var aMs = a.ended && a.started ? (new Date(a.ended) - new Date(a.started)) : 0;
+            var barW = Math.max(3, Math.min(100, Math.round(aMs / totalMs * 100)));
+            html += '<div class="ev" style="display:flex;align-items:center;gap:8px">';
+            html += '<span style="width:80px;font-weight:700;color:' + c + ';font-size:11px">' + esc(a.name) + '</span>';
+            html += '<div style="flex:1;height:14px;background:#e2e8f0;border-radius:3px;overflow:hidden">';
+            html += '<div style="width:' + barW + '%;height:100%;background:' + c + ';border-radius:3px"></div></div>';
+            html += '<span style="font-size:11px;color:#64748b;width:50px;text-align:right">' + durMs(a.started, a.ended) + '</span>';
+            html += '</div>';
+        }
+
+        // LLM calls by agent (group by parent)
+        html += '<div class="ev" style="background:#dbeafe;font-weight:700;font-size:12px">LLM Calls (' + generations.length + ')</div>';
+        for (var i = 0; i < generations.length; i++) {
+            var g = generations[i];
+            var model = g.model || '?';
+            var tokIn = g.input_tokens || 0;
+            var tokOut = g.output_tokens || 0;
+            html += '<div class="ev" style="font-size:11px;padding-left:16px">';
+            html += '<span style="color:#2563eb">&#9881;</span> ';
+            html += '<span style="color:#64748b">' + esc(model) + '</span> ';
+            if (tokIn || tokOut) html += '<span style="color:#94a3b8">' + tokIn + ' in / ' + tokOut + ' out</span> ';
+            html += '<span style="color:#94a3b8">' + durMs(g.started, g.ended) + '</span>';
+            html += '</div>';
+        }
+
+        // Tool calls chronological
+        html += '<div class="ev" style="background:#dbeafe;font-weight:700;font-size:12px">Tool Calls (' + tools.length + ')</div>';
+        // Sort by start time
+        tools.sort(function(a, b) { return (a.started || '') < (b.started || '') ? -1 : 1; });
+        for (var i = 0; i < tools.length; i++) {
+            var t = tools[i];
+            html += '<div class="ev" style="font-size:11px;padding-left:16px">';
+            html += '<span style="color:#059669">&rarr; ' + esc(t.name) + '</span> ';
+            html += '<span style="color:#94a3b8">' + durMs(t.started, t.ended) + '</span>';
+            if (t.input) html += '<div style="color:#94a3b8;font-size:10px;margin-top:1px;max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(t.input).substring(0, 120) + '</div>';
+            if (t.output) html += '<div style="color:#64748b;font-size:10px;margin-top:1px;max-width:600px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">&larr; ' + esc(t.output).substring(0, 120) + '</div>';
+            html += '</div>';
+        }
+
+        // Chronological execution log
+        html += '<div class="ev" style="background:#dbeafe;font-weight:700;font-size:12px">Execution Log (chronological)</div>';
+        var allSpans = spans.slice().sort(function(a, b) { return (a.started || '') < (b.started || '') ? -1 : 1; });
+        for (var i = 0; i < allSpans.length; i++) {
+            var s = allSpans[i];
+            if (s.type === 'TurnSpanData') continue; // skip noise
+            var icon = '', color = '#64748b', label = '';
+            if (s.type === 'AgentSpanData') { icon = '&#9654;'; color = agentColor(s.name); label = 'agent: ' + s.name; }
+            else if (s.type === 'TaskSpanData') { icon = '&#9632;'; color = '#6366f1'; label = 'task'; }
+            else if (s.type === 'GenerationSpanData') { icon = '&#9881;'; color = '#2563eb'; label = 'llm' + (s.model ? ' (' + s.model + ')' : ''); }
+            else if (s.type === 'FunctionSpanData') { icon = '&rarr;'; color = '#059669'; label = s.name; }
+            else { continue; }
+
+            html += '<div class="ev" style="font-size:11px;display:flex;gap:6px;align-items:flex-start">';
+            html += '<span style="color:#94a3b8;min-width:20px;text-align:right">' + (i + 1) + '</span>';
+            html += '<span style="color:' + color + '">' + icon + '</span>';
+            html += '<span style="color:' + color + ';font-weight:600">' + esc(label) + '</span>';
+            html += '<span style="color:#94a3b8;margin-left:auto">' + durMs(s.started, s.ended) + '</span>';
+            html += '</div>';
+        }
+
+        container.innerHTML = html;
+    } catch (e) { container.innerHTML = '<div class="ev" style="color:#dc2626">Error: ' + esc(e.message) + '</div>'; }
+}
 
 async function cancelTask(id) {
     if (!confirm('Cancel this task?')) return;

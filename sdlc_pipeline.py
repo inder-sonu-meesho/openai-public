@@ -30,6 +30,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel as PydanticBaseModel
 
+from openai import AsyncOpenAI
+
 from agents import (
     Agent,
     Runner,
@@ -38,14 +40,93 @@ from agents import (
     RunContextWrapper,
     RunResult,
     function_tool,
-    set_tracing_disabled,
     ModelSettings,
+    OpenAIChatCompletionsModel,
+    Trace,
+    Span,
 )
-
-# Disable tracing to avoid OpenAI telemetry noise
-set_tracing_disabled(True)
+from agents.tracing import TracingProcessor
 
 WORKSPACE = os.path.expanduser("~/workspace")
+
+# --- LLM Client Setup ---
+LLM_API_KEY = os.environ.get("LLM_API_KEY", os.environ.get("OPENAI_API_KEY", ""))
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "")
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-5.5")
+
+if LLM_BASE_URL:
+    # Custom endpoint (bifrost/self-hosted) — use ChatCompletions model
+    _oai_client = AsyncOpenAI(api_key=LLM_API_KEY, base_url=LLM_BASE_URL)
+    _model = OpenAIChatCompletionsModel(model=LLM_MODEL, openai_client=_oai_client)
+else:
+    # Direct OpenAI — use model string
+    _model = LLM_MODEL
+
+# --- Local Trace Capture ---
+_trace_store = {}  # task_id -> list of trace/span dicts
+
+class LocalTraceProcessor(TracingProcessor):
+    """Captures traces locally instead of sending to OpenAI."""
+    def on_trace_start(self, trace: Trace) -> None:
+        pass
+
+    def on_trace_end(self, trace: Trace) -> None:
+        pass
+
+    def on_span_start(self, span: Span) -> None:
+        pass
+
+    def on_span_end(self, span: Span) -> None:
+        self._capture_span(span)
+
+    def shutdown(self) -> None:
+        pass
+
+    def force_flush(self) -> None:
+        pass
+
+    def _capture_span(self, span: Span) -> None:
+        global _current_task
+        if not _current_task:
+            return
+        task_id = _current_task.task_id
+        if task_id not in _trace_store:
+            _trace_store[task_id] = []
+        sd = span.span_data
+        stype = type(sd).__name__ if sd else "unknown"
+        entry = {
+            "span_id": span.span_id,
+            "trace_id": span.trace_id,
+            "parent_id": span.parent_id,
+            "type": stype,
+            "name": getattr(sd, "name", "") or "",
+            "started": span.started_at,
+            "ended": span.ended_at,
+        }
+        # Enrich based on span type
+        if stype == "AgentSpanData":
+            entry["tools"] = getattr(sd, "tools", []) or []
+            entry["handoffs"] = getattr(sd, "handoffs", []) or []
+        elif stype == "FunctionSpanData":
+            inp = getattr(sd, "input", None)
+            out = getattr(sd, "output", None)
+            entry["input"] = str(inp)[:200] if inp else ""
+            entry["output"] = str(out)[:200] if out else ""
+        elif stype == "GenerationSpanData":
+            entry["model"] = getattr(sd, "model", "") or ""
+            usage = getattr(sd, "usage", None)
+            if usage:
+                if isinstance(usage, dict):
+                    entry["input_tokens"] = usage.get("input_tokens", 0) or 0
+                    entry["output_tokens"] = usage.get("output_tokens", 0) or 0
+                else:
+                    entry["input_tokens"] = getattr(usage, "input_tokens", 0) or 0
+                    entry["output_tokens"] = getattr(usage, "output_tokens", 0) or 0
+        _trace_store[task_id].append(entry)
+
+from agents.tracing import set_trace_processors
+# Replace default OpenAI exporter with local-only capture
+set_trace_processors([LocalTraceProcessor()])
 
 # Global ref to current running task for event capture
 _current_task = None
@@ -159,28 +240,28 @@ architect = Agent(
     name="architect",
     instructions=GLOBAL + "\n\n# Architect\nDesign systems, break down requirements. Read CLAUDE.md and code first. Max 10-15 files. Output: numbered task breakdown with files, acceptance criteria.",
     tools=DEV_TOOLS,
-    model="gpt-5.5",
+    model=_model,
 )
 
 developer = Agent(
     name="developer",
     instructions=GLOBAL + "\n\n# Developer\nWrite clean code following repo patterns. Clone repos, create branches. For large files: use replace_in_file not write_file. Run builds to verify.",
     tools=DEV_TOOLS,
-    model="gpt-5.5",
+    model=_model,
 )
 
 tester = Agent(
     name="tester",
     instructions=GLOBAL + "\n\n# Tester\nRead implementation first. Write tests. Run them via run_command. Report results.",
     tools=DEV_TOOLS,
-    model="gpt-5.5",
+    model=_model,
 )
 
 reviewer = Agent(
     name="reviewer",
     instructions=GLOBAL + "\n\n# Reviewer\nReview: bugs, error handling, security, readability, test coverage. Score 0-100. Severity: blocker/major/minor/nit.",
     tools=DEV_TOOLS,
-    model="gpt-5.5",
+    model=_model,
 )
 
 SPECIALISTS = {"architect": architect, "developer": developer, "tester": tester, "reviewer": reviewer}
@@ -220,7 +301,7 @@ async def _run_specialist(agent_name: str, task_prompt: str) -> str:
             agent,
             task_prompt,
             max_turns=25,
-            run_config=RunConfig(tracing_disabled=True),
+            run_config=RunConfig(tracing_disabled=False),
         )
 
         # Extract events from result items
@@ -312,7 +393,7 @@ You are a dispatcher. You ONLY dispatch work to specialists. You NEVER do work y
 - Pass context from previous results when delegating.
 - Never re-assign the exact same task.""",
     tools=[call_architect, call_developer, call_tester, call_reviewer],
-    model="gpt-5.5",
+    model=_model,
 )
 
 
@@ -404,7 +485,7 @@ async def run_pipeline(task_id: str):
             orchestrator,
             task.goal,
             max_turns=25,
-            run_config=RunConfig(tracing_disabled=True),
+            run_config=RunConfig(tracing_disabled=False),
         )
 
         # Capture orchestrator's final output
@@ -487,6 +568,15 @@ async def get_stats_api(task_id: str):
         stats[a]["tool_errors"] += 1 if ev.get("is_error") else 0
         stats[a]["text_chars"] += len(ev.get("text", ""))
     return {"task_id": task_id, "stats": stats}
+
+
+@app.get("/oai-pipeline/api/task/{task_id}/traces")
+async def get_traces_api(task_id: str):
+    task = tasks.get(task_id)
+    if not task:
+        raise HTTPException(404, "Task not found")
+    spans = _trace_store.get(task_id, [])
+    return {"task_id": task_id, "total": len(spans), "spans": spans}
 
 
 @app.delete("/oai-pipeline/api/task/{task_id}")
