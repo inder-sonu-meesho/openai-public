@@ -30,7 +30,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel as PydanticBaseModel
 
-from openai import AsyncOpenAI
+LANGFUSE_ENABLED = os.environ.get("LANGFUSE_SECRET_KEY", "")
+if LANGFUSE_ENABLED:
+    from langfuse.openai import AsyncOpenAI
+else:
+    from openai import AsyncOpenAI
 
 from agents import (
     Agent,
@@ -86,7 +90,7 @@ class LocalTraceProcessor(TracingProcessor):
         pass
 
     def _capture_span(self, span: Span) -> None:
-        global _current_task
+        _current_task = _current_task_var.get()
         if not _current_task:
             return
         task_id = _current_task.task_id
@@ -128,8 +132,9 @@ from agents.tracing import set_trace_processors
 # Replace default OpenAI exporter with local-only capture
 set_trace_processors([LocalTraceProcessor()])
 
-# Global ref to current running task for event capture
-_current_task = None
+# Per-asyncio-task reference to the current pipeline task
+import contextvars
+_current_task_var: contextvars.ContextVar[Optional['TaskInfo']] = contextvars.ContextVar('_current_task_var', default=None)
 
 
 # --- Tools (same across all frameworks) ---
@@ -271,7 +276,7 @@ SPECIALISTS = {"architect": architect, "developer": developer, "tester": tester,
 
 def _add_event(author, text="", tool_calls=None, tool_results=None, is_error=False):
     """Add an event to the current task if one is running."""
-    global _current_task
+    _current_task = _current_task_var.get()
     if not _current_task:
         return
     _current_task.add_event({
@@ -288,7 +293,7 @@ def _add_event(author, text="", tool_calls=None, tool_results=None, is_error=Fal
 
 async def _run_specialist(agent_name: str, task_prompt: str) -> str:
     """Run a specialist and capture events."""
-    global _current_task
+    _current_task = _current_task_var.get()
     agent = SPECIALISTS[agent_name]
 
     if _current_task:
@@ -473,12 +478,21 @@ tasks = _load_tasks()
 
 # --- Background runner ---
 
+# Langfuse observe wrapper (only if Langfuse is configured)
+if os.environ.get("LANGFUSE_SECRET_KEY"):
+    from langfuse import observe as _observe
+    _pipeline_observe = _observe(name="oai-agents-sdk")
+else:
+    def _pipeline_observe(fn): return fn
+
+
+@_pipeline_observe
 async def run_pipeline(task_id: str):
     global _current_task
     task = tasks[task_id]
     task.status = "running"
     task.save()
-    _current_task = task
+    _current_task_var.set(task)
 
     try:
         result = await Runner.run(
@@ -503,7 +517,7 @@ async def run_pipeline(task_id: str):
         task.completed_at = time.time()
         task.save()
     finally:
-        _current_task = None
+        _current_task_var.set(None)
 
 
 # --- FastAPI ---
