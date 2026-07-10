@@ -518,6 +518,13 @@ async def run_pipeline(task_id: str):
         task.save()
     finally:
         _current_task_var.set(None)
+        # Flush Langfuse traces
+        if LANGFUSE_ENABLED:
+            try:
+                from langfuse import Langfuse
+                Langfuse().flush()
+            except Exception:
+                pass
 
 
 # --- FastAPI ---
