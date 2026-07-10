@@ -305,7 +305,7 @@ async def _run_specialist(agent_name: str, task_prompt: str) -> str:
         result = await Runner.run(
             agent,
             task_prompt,
-            max_turns=25,
+            max_turns=300,
             run_config=RunConfig(tracing_disabled=False),
         )
 
@@ -498,7 +498,7 @@ async def run_pipeline(task_id: str):
         result = await Runner.run(
             orchestrator,
             task.goal,
-            max_turns=25,
+            max_turns=300,
             run_config=RunConfig(tracing_disabled=False),
         )
 
